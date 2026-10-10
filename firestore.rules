@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    function isStudent() {
+      return signedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student';
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if signedIn() && request.auth.uid == userId
+        && request.resource.data.uid == userId
+        && request.resource.data.role == 'student'
+        && request.resource.data.keys().hasOnly(['uid','name','rollNumber','email','role','createdAt'])
+        && getAfter(/databases/$(database)/documents/rollNumbers/$(request.resource.data.rollNumber.lower())).data.uid == userId;
+      allow update, delete: if isAdmin();
+    }
+
+    match /rollNumbers/{roll} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student'
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.rollNumber.lower() == roll;
+      allow update, delete: if isAdmin();
+    }
+
+    match /events/{eventId} {
+      allow read: if signedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isStudent()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['registeredCount'])
+        && request.resource.data.registeredCount == resource.data.registeredCount + 1
+        && existsAfter(/databases/$(database)/documents/registrations/$(request.auth.uid + '_' + eventId))
+        && getAfter(/databases/$(database)/documents/registrations/$(request.auth.uid + '_' + eventId)).data.studentId == request.auth.uid
+        && request.resource.data.registeredCount <= resource.data.capacity);
+    }
+
+    match /registrations/{registrationId} {
+      allow read: if isAdmin() || (isStudent() && resource.data.studentId == request.auth.uid);
+      allow create: if isStudent()
+        && request.resource.data.studentId == request.auth.uid
+        && registrationId == request.auth.uid + '_' + request.resource.data.eventId
+        && exists(/databases/$(database)/documents/events/$(request.resource.data.eventId))
+        && getAfter(/databases/$(database)/documents/events/$(request.resource.data.eventId)).data.registeredCount
+          == get(/databases/$(database)/documents/events/$(request.resource.data.eventId)).data.registeredCount + 1;
+      allow update, delete: if isAdmin();
+    }
+  }
+}
